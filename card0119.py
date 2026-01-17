@@ -73,7 +73,7 @@ def draw_results_on_image(pil_image, results, region_offsets):
     return Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
 
 
-# --- Streamlit 頁面設定 (保持不變) ---
+# --- Streamlit 頁面設定 ---
 st.set_page_config(page_title="答案卡辨識系統", layout="wide")
 
 # Session State 初始化
@@ -97,11 +97,11 @@ if 'result_image' not in st.session_state:
     st.session_state.result_image = None
 
 
-st.title("📝 答案卡標示與辨識 (藍框修正版)")
+st.title("📝 答案卡標示與辨識 (置中修正版)")
 
 col_left, col_right = st.columns([1, 2])
 
-# ================= 左側：控制面板 (保持不變) =================
+# ================= 左側：控制面板 =================
 with col_left:
     st.header("1. 上傳與設定")
     uploaded_file = st.file_uploader("請上傳空白答案卡 (jpg, png)", type=["jpg", "png", "jpeg"])
@@ -138,22 +138,19 @@ with col_left:
         def get_btn_type(mode_name):
             return "primary" if st.session_state.cropping_mode == mode_name else "secondary"
 
-        # A1 按鈕
+        # 按鈕區
         c1, c2 = st.columns([3, 1])
         c1.button("標示 A1 (定位點)", on_click=set_mode, args=('A1',), type=get_btn_type('A1'), use_container_width=True)
         if st.session_state.zones['A1']: c2.success("✔")
 
-        # A2 按鈕
         c1, c2 = st.columns([3, 1])
         c1.button("標示 A2 (基本資料)", on_click=set_mode, args=('A2',), type=get_btn_type('A2'), use_container_width=True)
         if st.session_state.zones['A2']: c2.success("✔")
 
-        # A3 按鈕
         c1, c2 = st.columns([3, 1])
         c1.button("標示 A3 (選擇題)", on_click=set_mode, args=('A3',), type=get_btn_type('A3'), use_container_width=True)
         if st.session_state.zones['A3']: c2.success("✔")
 
-        # A4 按鈕
         c1, c2 = st.columns([3, 1])
         c1.button("標示 A4 (手寫區)", on_click=set_mode, args=('A4',), type=get_btn_type('A4'), use_container_width=True)
         if st.session_state.zones['A4']: c2.success("✔")
@@ -217,19 +214,23 @@ with col_right:
     else:
         current_mode = st.session_state.cropping_mode
         
-        # --- 情況 1: 編輯模式 (顯示 Cropper + 確認按鈕) ---
+        # --- 情況 1: 編輯模式 ---
         if current_mode in ['A1', 'A2', 'A3', 'A4']:
             st.markdown(f"### 🔧 正在設定：**{current_mode}** 區域")
             st.info("請拖曳下方藍框至正確位置，完成後按「確定」。")
             
-            # =========== 修正開始 ===========
-            # 這裡不需要複雜的判斷，直接指定初始座標即可。
-            # 因為下方的 st_cropper 使用了獨特的 key (f"cropper_{current_mode}")，
-            # 每次切換模式時，它都會重新初始化並使用這個預設值顯示藍框。
-            start_coords = (0, 0, 50, 50)
-            # =========== 修正結束 ===========
+            # =========== 計算中心點座標 ===========
+            # 取得縮圖的寬高
+            img_w, img_h = st.session_state.resized_image.size
+            box_w, box_h = 50, 50 # 框框大小
+            
+            # 計算讓框框置中的左上角座標
+            center_left = (img_w - box_w) // 2
+            center_top = (img_h - box_h) // 2
+            
+            start_coords = (center_left, center_top, box_w, box_h)
+            # ====================================
 
-            # 呼叫 Cropper
             box_data = st_cropper(
                 st.session_state.resized_image, 
                 realtime_update=True,
@@ -251,17 +252,19 @@ with col_right:
                     st.session_state.temp_box = None
                     st.rerun()
                 else:
-                    # 這裡加一個 fallback，如果使用者沒動滑鼠直接按確定，就用預設值
-                    st.session_state.zones[current_mode] = {'left':0, 'top':0, 'width':50, 'height':50}
+                    # Fallback: 使用中心點
+                    st.session_state.zones[current_mode] = {
+                        'left': center_left, 'top': center_top, 'width': box_w, 'height': box_h
+                    }
                     st.session_state.cropping_mode = None
                     st.session_state.temp_box = None
                     st.rerun()
 
-        # --- 情況 2: 顯示辨識結果 (保持不變) ---
+        # --- 情況 2: 顯示辨識結果 ---
         elif st.session_state.result_image is not None:
             st.image(st.session_state.result_image, caption="辨識結果", use_container_width=True)
             
-        # --- 情況 3: 預覽狀態 (保持不變) ---
+        # --- 情況 3: 預覽狀態 ---
         else:
             st.image(st.session_state.resized_image, caption="原始預覽圖", use_container_width=True)
             marked_zones = [k for k, v in st.session_state.zones.items() if v is not None]
