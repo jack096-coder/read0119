@@ -7,13 +7,7 @@ import pandas as pd
 import io
 
 # --- 影像處理函數區域 (OpenCV) ---
-
-def preprocess_image(pil_image):
-    """將 PIL 圖片轉換為 OpenCV 格式並轉為灰階"""
-    open_cv_image = np.array(pil_image.convert('RGB'))
-    open_cv_image = open_cv_image[:, :, ::-1].copy() # Convert RGB to BGR
-    gray = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
-    return open_cv_image, gray
+# 這些函數保持不變，負責底層的視覺辨識
 
 def detect_corner_markers(img_crop_bgr):
     """辨識黑色方形定位點 (A1)"""
@@ -82,6 +76,7 @@ def draw_results_on_image(pil_image, results, region_offsets):
 
     return Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
 
+
 # --- Streamlit 主程式 ---
 
 st.set_page_config(page_title="答案卡辨識系統", layout="wide")
@@ -104,7 +99,7 @@ if 'recognition_results' not in st.session_state:
 if 'result_image' not in st.session_state:
     st.session_state.result_image = None
 
-st.title("📝 答案卡全版標示與辨識 (自動縮放版)")
+st.title("📝 答案卡全版標示與辨識 (修復版)")
 
 col_left, col_right = st.columns([1, 2])
 
@@ -123,14 +118,14 @@ with col_left:
             st.session_state.original_image = original_pil
             
             # 2. 計算縮放比例，產生適合螢幕的預覽圖 (寬度設為 800px)
+            # 這能解決「無法顯示整張卡」的問題
             display_width = 800
             w_percent = (display_width / float(original_pil.size[0]))
             h_size = int((float(original_pil.size[1]) * float(w_percent)))
             
-            # 只有當原圖比 800px 大時才縮小，否則保持原樣
             if original_pil.size[0] > display_width:
                 st.session_state.resized_image = original_pil.resize((display_width, h_size), Image.Resampling.LANCZOS)
-                st.session_state.scale_factor = 1 / w_percent # 記錄倍率，以便把座標算回去
+                st.session_state.scale_factor = 1 / w_percent 
             else:
                 st.session_state.resized_image = original_pil
                 st.session_state.scale_factor = 1.0
@@ -148,7 +143,7 @@ with col_left:
 
         # 按鈕區
         st.markdown("### 2. 標示區域")
-        st.info("右側會顯示「全版縮圖」。請在圖上畫框，程式會自動對應回原圖。")
+        st.info("請依序點擊按鈕，並在右圖調整藍框範圍。")
 
         b1, s1 = st.columns([3, 1])
         b1.button("標示 A1 (定位點)", on_click=set_crop_mode, args=('A1',), use_container_width=True)
@@ -178,22 +173,25 @@ with col_left:
                         region_offsets = {}
                         scale = st.session_state.scale_factor
                         
-                        # 轉為 BGR
                         full_img_cv = cv2.cvtColor(np.array(st.session_state.original_image.convert('RGB')), cv2.COLOR_RGB2BGR)
                         
-                        # 處理各個區域 (需將預覽圖座標 x Scale 還原為原圖座標)
+                        # 迴圈處理各區域
                         for zone_key in ['A1', 'A2', 'A3']:
                             box = st.session_state.zones[zone_key]
-                            # 還原座標
+                            
+                            # 關鍵修正：這裡的 box 現在是 dictionary，可以安全讀取
                             real_left = int(box['left'] * scale)
                             real_top = int(box['top'] * scale)
                             real_width = int(box['width'] * scale)
                             real_height = int(box['height'] * scale)
                             
+                            # 邊界檢查 (避免裁切超出圖片範圍)
+                            real_left = max(0, real_left)
+                            real_top = max(0, real_top)
+                            
                             # 裁切原圖
                             crop = full_img_cv[real_top:real_top+real_height, real_left:real_left+real_width]
                             
-                            # 辨識
                             if zone_key == 'A1':
                                 results['A1_value'] = detect_corner_markers(crop)
                             else:
@@ -201,7 +199,7 @@ with col_left:
                                 
                             region_offsets[zone_key] = (real_left, real_top)
 
-                        # A4 (僅需座標)
+                        # A4 (手寫區座標)
                         box_a4 = st.session_state.zones['A4']
                         real_left = int(box_a4['left'] * scale)
                         real_top = int(box_a4['top'] * scale)
@@ -219,7 +217,8 @@ with col_left:
                         st.success("辨識完成！")
                         
                     except Exception as e:
-                        st.error(f"錯誤: {e}")
+                        st.error(f"程式發生錯誤: {e}")
+                        # 印出詳細錯誤以便除錯
                         import traceback
                         st.text(traceback.format_exc())
 
@@ -227,7 +226,7 @@ with col_left:
         if st.session_state.recognition_results:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # A1 Sheet
+                # 建立 A1 Sheet
                 a1_data = []
                 for i, square in enumerate(st.session_state.recognition_results.get('A1_value', [])):
                     row = {'ID': i+1}
@@ -235,31 +234,34 @@ with col_left:
                         row[f'Corner_{j+1}_X'] = pt[0]
                         row[f'Corner_{j+1}_Y'] = pt[1]
                     a1_data.append(row)
-                pd.DataFrame(a1_data).to_excel(writer, sheet_name='A1', index=False)
+                if a1_data:
+                    pd.DataFrame(a1_data).to_excel(writer, sheet_name='A1_Pos', index=False)
 
-                # A2, A3 Sheet
+                # 建立 A2, A3 Sheet
                 for key in ['A2_value', 'A3_value']:
                     data = [{'ID': i+1, 'X': c[0], 'Y': c[1], 'R': c[2]} for i, c in enumerate(st.session_state.recognition_results.get(key, []))]
-                    pd.DataFrame(data).to_excel(writer, sheet_name=key.split('_')[0], index=False)
+                    if data:
+                        pd.DataFrame(data).to_excel(writer, sheet_name=key.split('_')[0], index=False)
                     
             output.seek(0)
-            st.download_button("下載 Excel", data=output, file_name="results.xlsx")
+            st.download_button("下載 Excel 結果", data=output, file_name="omr_results.xlsx")
 
-# --- 右側欄位：全版顯示與操作 ---
+# --- 右側欄位：操作區 ---
 with col_right:
     if st.session_state.original_image is None:
         st.info("👈 請先從左側上傳圖片")
     else:
         current_mode = st.session_state.cropping_mode
         
-        # 情況 1: 正在標示模式中
+        # 情況 1: 標示模式
         if current_mode in ['A1', 'A2', 'A3', 'A4']:
-            st.warning(f"正在標示：{current_mode}。請調整藍色框線，覆蓋目標區域。")
+            st.warning(f"🔧 正在設定：{current_mode} 區域")
             
-            # 安全地讀取之前存的座標 (針對縮放後的圖片)
+            # 取得該區域目前的設定值
             default_box = st.session_state.zones.get(current_mode)
             default_coords = None
             
+            # 確保 default_box 是字典且包含座標
             if default_box and isinstance(default_box, dict) and 'left' in default_box:
                 default_coords = (
                     default_box['left'],
@@ -268,26 +270,26 @@ with col_right:
                     default_box['height']
                 )
             
-            # 使用 resized_image 進行顯示，這樣才能看到全圖
-            # 注意：st_cropper 必須有一個初始框，預設會顯示在中間，這是套件特性，無法完全隱藏
-            cropped_box = st_cropper(
+            # ★★★ 關鍵修正 ★★★
+            # return_type='box' : 讓它回傳座標字典 {'left':10, 'top':20...} 
+            # 而不是回傳圖片 Image Object
+            box_data = st_cropper(
                 st.session_state.resized_image, 
                 realtime_update=True,
                 box_color='#0000FF',
                 aspect_ratio=None,
                 default_coords=default_coords,
-                key=f"cropper_{current_mode}" # Unique key prevents state mixing
+                return_type='box',  # 這是解決 TypeError 的關鍵
+                key=f"cropper_{current_mode}" 
             )
             
-            if cropped_box:
-                st.session_state.zones[current_mode] = cropped_box
+            if box_data:
+                st.session_state.zones[current_mode] = box_data
 
-        # 情況 2: 已有辨識結果
+        # 情況 2: 顯示結果
         elif st.session_state.result_image is not None:
-            # 顯示結果時也進行縮放，避免過大
-            st.image(st.session_state.result_image, caption="辨識結果", use_container_width=True)
+            st.image(st.session_state.result_image, caption="最終辨識結果 (紅框)", use_container_width=True)
             
-        # 情況 3: 預設狀態
+        # 情況 3: 顯示原圖 (預覽模式)
         else:
-            # 顯示縮放後的整張圖
-            st.image(st.session_state.resized_image, caption="原始答案卡 (全版預覽)", use_container_width=True)
+            st.image(st.session_state.resized_image, caption="原始答案卡預覽", use_container_width=True)
